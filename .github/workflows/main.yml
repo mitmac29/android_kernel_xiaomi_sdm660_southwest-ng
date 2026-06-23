@@ -1,0 +1,37 @@
+name: Build SouthWest Kernel
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            bc bison flex zip curl wget \
+            libarchive-tools zstd cpio \
+            gcc-aarch64-linux-gnu \
+            gcc-arm-linux-gnueabi
+
+      - name: Download ZyC Clang
+        run: |
+          mkdir -p tc/zyc_clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz
+          tar -xf Clang-15.0.7-20251111.tar.gz -C tc/zyc_clang
+
+      - name: Build Kernel
+        run: |
+          chmod +x build.sh
+          ./build.sh
+
+      - name: Upload ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: SouthWest-Kernel
+          path: release/*.zip
