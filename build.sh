@@ -1,85 +1,87 @@
 #!/bin/bash
-set -e
+#
+# Compile script for Nyxion kernel.
 
-START=$(date +%s)
+##----------------------------------------------------------##
 
-ZIPNAME="SW-lavender-4.19-$(date +%Y%m%d-%H%M).zip"
+START=$(date +"%s")
+ZIPNAME="SW-lavender-4.19-dynamic-ksun-$(date '+%Y%m%d-%H%M').zip"
+TC_DIR="$(pwd)/tc/zyc_clang"
+IMAGE="out/arch/arm64/boot/Image.gz"
+
+DEFCONFIG="vendor/xiaomi/sdm660_defconfig"
 
 export KBUILD_BUILD_USER="Mitesh"
-export KBUILD_BUILD_HOST="GitHub-Actions"
-
+export KBUILD_BUILD_HOST="Mit"
 export LLVM=1
 export LLVM_IAS=1
 
-TC_DIR="$GITHUB_WORKSPACE/tc/zyc_clang"
-IMAGE="out/arch/arm64/boot/Image.gz-dtb"
-
-export PATH="$TC_DIR/bin:$PATH"
-
-echo "================================="
-echo "Kernel Version : $(make kernelversion)"
-echo "Compiler       : $(clang --version | head -n1)"
-echo "Branch         : $(git rev-parse --abbrev-ref HEAD)"
-echo "Latest Commit  : $(git log --oneline -1)"
-echo "================================="
-
-rm -rf out
-mkdir -p out
-
-echo "Generating kernel config..."
-
-make ARCH=arm64 O=out vendor/xiaomi/sdm660_defconfig
-
-scripts/kconfig/merge_config.sh \
-    -m \
-    -O out \
-    arch/arm64/configs/vendor/xiaomi/sdm660_defconfig \
-    arch/arm64/configs/vendor/xiaomi/lavender.config
-
-make ARCH=arm64 O=out olddefconfig
-
-echo "Starting compilation..."
-
-make -j$(nproc) \
-    ARCH=arm64 \
-    O=out \
-    CC=clang \
-    CROSS_COMPILE=aarch64-linux-gnu- \
-    CROSS_COMPILE_ARM32=arm-linux-gnueabi- \
-    CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-    CLANG_TRIPLE=aarch64-linux-gnu-
-
-if [ ! -f "$IMAGE" ]; then
-    echo "ERROR: Kernel image not found!"
-    echo "Contents of boot directory:"
-    find out/arch/arm64/boot -type f 2>/dev/null || true
-    exit 1
+if ! [ -d "$TC_DIR" ]; then
+    echo "Clang not found, Downloading clang source."
+    mkdir -p "$TC_DIR"
+    wget https://github.com/ZyCromerZ/Clang/releases/download/15.0.7-20251111-release/Clang-15.0.7-20251111.tar.gz -O "$TC_DIR/zyc_clang.tar.gz"
+    echo "Extracting Clang source."
+    if ! tar -xvf "$TC_DIR/zyc_clang.tar.gz" -C "$TC_DIR" >/dev/null 2>&1; then
+        echo "Extracting failed! Aborting..."
+        exit 1
+    fi
 fi
 
-echo "Cloning AnyKernel3..."
+case "$1" in
+    -r|--regen)
+        make O=out ARCH=arm64 $DEFCONFIG savedefconfig && cp out/defconfig arch/arm64/configs/$DEFCONFIG
+        echo -e "\nSuccessfully regenerated defconfig at $DEFCONFIG"
+        exit
+        ;;
+    -rf|--regen-full)
+        make O=out ARCH=arm64 $DEFCONFIG && cp out/.config arch/arm64/configs/$DEFCONFIG
+        echo -e "\nSuccessfully regenerated full defconfig at $DEFCONFIG"
+        exit
+        ;;
+    -c|--clean)
+        rm -rf out
+        ;;
+    -p|--package)
+        echo -e "\n Installing required package"
+        sudo apt update && sudo apt install -y cpio flex bison bc libarchive-tools zstd wget curl
+        ;;
+esac
 
-git clone --depth=1 \
-    -b 4.19 \
-    https://github.com/Sa-Sajjad/AnyKernel3 \
-    AnyKernel3
+compile() {
+    export PATH="$TC_DIR/bin:$PATH"
+    export KBUILD_COMPILER_STRING="$(${TC_DIR}/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')"
+    post_msg "<b>CI Build Triggered</b>%0A<b>Kernel Version:</b> <code>$(make kernelversion)</code>%0A<b>Date:</b> <code>$(TZ=Asia/Kolkata date)</code>%0A<b>Device:</b> <code>Redmi Note 7 (lavender)</code>%0A<b>Compiler:</b> <code>$KBUILD_COMPILER_STRING</code>%0A<b>Branch:</b> <code>$(git rev-parse --abbrev-ref HEAD)</code>%0A<b>Top Commit:</b> <code>$(git log --pretty=format:'%h : %s' -1)</code>" >/dev/null 2>&1;
 
-cp "$IMAGE" AnyKernel3/
+    mkdir -p out
+    MAKE_ARGS="ARCH=arm64 O=out CC=clang CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- CROSS_COMPILE_COMPAT=arm-linux-gnueabi- CLANG_TRIPLE=aarch64-linux-gnu-"
 
-cd AnyKernel3
+    echo -e "\nStarting compilation...\n"
 
-zip -r9 "../$ZIPNAME" *
+    make $MAKE_ARGS ${DEFCONFIG}
+    make $MAKE_ARGS -j$(nproc) 2>&1 | tee error.log
 
-cd ..
+    if ! [ -f "$IMAGE" ]; then
+        push "error.log" "Build failed. See log for details."
+        exit 1
+    fi
 
-mkdir -p release
-mv "$ZIPNAME" release/
+    git clone -q https://github.com/Sa-Sajjad/AnyKernel3 -b 4.19
+    cp "$IMAGE" AnyKernel3
+}
 
-END=$(date +%s)
-DIFF=$((END - START))
+zipping() {
+    cd AnyKernel3 || exit 1
+    zip -r9 "../$ZIPNAME" *
+    cd ..
+    MD5CHECK=$(md5sum "$ZIPNAME" | cut -d' ' -f1)
+    push "$ZIPNAME" " <b>Build took:</b> $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) second(s) | <b>Compiler:</b> <code>$KBUILD_COMPILER_STRING</code> | <b>MD5 Checksum : </b><code>$MD5CHECK</code>" >/dev/null 2>&1;
+    rm -rf AnyKernel3
 
-echo ""
-echo "================================="
-echo "Build completed successfully!"
-echo "ZIP : release/$ZIPNAME"
-echo "Time: $((DIFF / 60))m $((DIFF % 60))s"
-echo "================================="
+}
+
+##----------------------------------------------------------##
+
+compile
+END=$(date +"%s")
+DIFF=$(($END - $START))
+zipping
