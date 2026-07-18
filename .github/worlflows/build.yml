@@ -1,4 +1,4 @@
-name: Build SouthWest Kernel
+name: Build SouthWest Kernel KSU
 
 on:
   workflow_dispatch:
